@@ -65,8 +65,7 @@ function App() {
 
       {/* Container for SerenityChatWidget mount */}
       <div id="serenity-chat-container" className="chat-container" />
-      {/* Container for AIHubChat (matches your snippet id) */}
-      <div id="aihub-chat" className="chat-container" />
+      {/* Removed unused AIHubChat container to avoid empty box */}
 
       {/* Debug info removed */}
 
