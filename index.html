@@ -21,15 +21,13 @@
         window.AIHubChat or window.SerenityChatWidget, respectively.
       -->
       <!-- <script defer src="/replace-with-official-aihub-chat-url.js"></script> -->
-    <!-- SDK script: Provide ONE of the following when available -->
-    <!-- 1) AIHubChat global SDK (preferred per your snippet): -->
-    <!-- <script src="https://cdn.serenitystar.ai/aihubchat/latest/aihubchat.min.js" defer></script> -->
-    <!-- 2) Serenity Chat Widget SDK (if using window.SerenityChatWidget): -->
-    <!-- <script src="https://cdn.serenitystar.ai/chat-widget/latest/serenity-chat-widget.min.js" defer></script> -->
+    <!-- SDK script: Using Serenity Chat Widget CDN -->
+    <script src="https://cdn.serenitystar.ai/chat-widget/latest/serenity-chat-widget.min.js" defer></script>
   </head>
   <body>
     <div id="root"></div>
-    <!-- Empty HTML element to be replaced by the widget -->
+    <!-- Empty HTML elements to be replaced by the widget -->
+    <div id="serenity-chat-container"></div>
     <div id="aihub-chat"></div>
     <script type="module" src="/src/main.jsx"></script>
     <!-- Add JS for AIHubChat widget -->
