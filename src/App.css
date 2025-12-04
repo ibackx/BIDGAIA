@@ -1,0 +1,39 @@
+#root {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+}
+
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: filter 300ms;
+}
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+}
+.logo.react:hover {
+  filter: drop-shadow(0 0 2em #61dafbaa);
+}
+
+@keyframes logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+  padding: 2em;
+}
+
+.app-container { max-width: 800px; margin: 0 auto; padding: 24px; }
+.chat-container { border: 1px solid #ddd; border-radius: 8px; min-height: 420px; overflow: hidden; margin: 12px 0; }
+.read-the-docs {
+  color: #888;
+}
+
+.api-chat { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-top: 16px; text-align: left; }
+.api-chat__controls { display: flex; gap: 8px; margin: 8px 0 12px; }
+.api-chat__controls input { flex: 1; padding: 8px; }
+.api-chat__error { color: #b00020; margin-bottom: 8px; }
+.api-chat__panel { margin-top: 10px; background: #f8f9fa; border: 1px solid #eee; border-radius: 6px; padding: 10px; }
