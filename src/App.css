@@ -29,6 +29,7 @@
 
 .app-container { max-width: 800px; margin: 0 auto; padding: 24px; }
 .chat-container { border: 1px solid #ddd; border-radius: 8px; min-height: 420px; overflow: hidden; margin: 12px 0; }
+.chat-container:empty { display: none; }
 .read-the-docs {
   color: #888;
 }
