@@ -29,8 +29,8 @@
     <!-- Empty HTML element to be replaced by the widget(s) -->
     <div id="serenity-chat-container"></div>
     <div id="aihub-chat"></div>
-    <script type="module" src="/src/main.jsx"></script>
-    <!-- Add JS for AIHubChat widget -->
+    <!-- Add JS for AIHubChat widget: ensure SDK loads before app -->
     <script src="https://hub.serenitystar.ai/resources/chat.js"></script>
+    <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
