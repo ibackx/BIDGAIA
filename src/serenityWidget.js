@@ -8,6 +8,7 @@ let widgetInstance = null
 let onNoFlagsNextUserMessageCb = null
 let networkProbeInstalled = false
 let wsProbeInstalled = false
+let probePollTimer = null
 
 function installNetworkProbe() {
   if (networkProbeInstalled) return
@@ -69,6 +70,62 @@ export function initSerenityWidget({ onFlagsDetected, onNoFlagsNextUserMessage }
   onNoFlagsNextUserMessageCb = onNoFlagsNextUserMessage
   try { installNetworkProbe() } catch {}
   try { installWebSocketProbe() } catch {}
+
+  // Start a lightweight poller to infer flags from network/debug snapshots
+  try {
+    if (!probePollTimer) {
+      probePollTimer = setInterval(() => {
+        try {
+          const dbg = window.__serenityDebug || {}
+          const raw = dbg.lastWSMessage || dbg.rawResponse || null
+          if (!raw) return
+          let flags = null
+          const ar = raw?.action_results || raw?.result || raw?.skills || null
+          if (ar && typeof ar === 'object') {
+            // Same normalization as below
+            const norm = (v) => {
+              if (v === true || v === 'true') return true
+              if (v && typeof v === 'object') {
+                if (v.json_content === true) return true
+                if (v.content === true || v.content === 'true') return true
+                if (v.output && (v.output.content === true || v.output.content === 'true')) return true
+                if (v.output && v.output.type === 'CheckCondition' && (v.output.content === true || v.output.content === 'true')) return true
+              }
+              return false
+            }
+            const direct = {
+              TendenciaSuicida: norm(ar.TendenciaSuicida?.result ?? ar.TendenciaSuicida?.output ?? ar.TendenciaSuicida),
+              PautasDeAlarmaClinicas: norm(ar.PautasDeAlarmaClinicas?.result ?? ar.PautasDeAlarmaClinicas?.output ?? ar.PautasDeAlarmaClinicas),
+              ViolenciaRiesgoExtremo: norm(ar.ViolenciaRiesgoExtremo?.result ?? ar.ViolenciaRiesgoExtremo?.output ?? ar.ViolenciaRiesgoExtremo),
+            }
+            if (direct.TendenciaSuicida || direct.PautasDeAlarmaClinicas || direct.ViolenciaRiesgoExtremo) {
+              flags = direct
+            } else {
+              for (const [k, v] of Object.entries(ar)) {
+                const rf = v?.result?.flags
+                if (rf && typeof rf === 'object') { flags = rf; break }
+              }
+              if (!flags) {
+                const mapped = { TendenciaSuicida: false, PautasDeAlarmaClinicas: false, ViolenciaRiesgoExtremo: false }
+                for (const [k, v] of Object.entries(ar)) {
+                  const out = v?.output ?? v?.result ?? v
+                  if (out?.type === 'CheckCondition' && (out.content === true || out.content === 'true')) {
+                    if (k.includes('TendenciaSuicida')) mapped.TendenciaSuicida = true
+                    if (k.includes('PautasDeAlarmaClinicas')) mapped.PautasDeAlarmaClinicas = true
+                    if (k.includes('ViolenciaRiesgoExtremo')) mapped.ViolenciaRiesgoExtremo = true
+                  }
+                }
+                if (mapped.TendenciaSuicida || mapped.PautasDeAlarmaClinicas || mapped.ViolenciaRiesgoExtremo) flags = mapped
+              }
+            }
+          }
+          if (flags) {
+            handleFlags(flags, onFlagsDetected)
+          }
+        } catch {}
+      }, 500)
+    }
+  } catch {}
 
   const container = document.getElementById('serenity-chat-container')
   if (!container) {
@@ -188,7 +245,7 @@ export function initSerenityWidget({ onFlagsDetected, onNoFlagsNextUserMessage }
   }
 
   if (!window.SerenityChatWidget || !window.SerenityChatWidget.init) {
-    console.warn('SDK no disponible: ni AIHubChat ni SerenityChatWidget están cargados. Agregá el script del SDK en index.html.')
+    console.warn('SDK no disponible: ni AIHubChat ni SerenityChatWidget están cargados. Continuo con detector por red.')
     return
   }
 
