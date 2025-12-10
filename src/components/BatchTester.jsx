@@ -17,7 +17,10 @@ async function loadPhrases() {
 function extractAssistantTextFromDOM() {
   const root = document.getElementById('serenity-chat-container')
   if (!root) return ''
-  const bubbles = root.querySelectorAll('[data-role="assistant"], .assistant, .message.assistant, .serenity-message-assistant')
+  // Try multiple selectors used by different widget renders
+  const bubbles = root.querySelectorAll(
+    '[data-role="assistant"], .assistant, .message.assistant, .serenity-message-assistant, [data-author="assistant"], .chat-message.assistant'
+  )
   const last = bubbles[bubbles.length - 1]
   if (last) {
     const textEl = last.querySelector('.content, .text, p, span, div') || last
@@ -79,7 +82,7 @@ async function sendMessageToWidget(text) {
   // DOM fallback: find input/textarea/contenteditable in widget and simulate send
   const root = document.getElementById('serenity-chat-container')
   if (!root) return
-  const input = root.querySelector('textarea, input[type="text"], [contenteditable="true"]')
+  const input = root.querySelector('textarea, input[type="text"], [contenteditable="true"], .serenity-input, .chat-input')
   if (input) {
     if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
       input.value = text
@@ -89,7 +92,7 @@ async function sendMessageToWidget(text) {
       input.dispatchEvent(new Event('input', { bubbles: true }))
     }
     // Look for send button
-    const btn = root.querySelector('button[type="submit"], .send, .serenity-send, [aria-label*="Enviar"], [title*="Enviar"]')
+    const btn = root.querySelector('button[type="submit"], .send, .serenity-send, [aria-label*="Enviar"], [title*="Enviar"], [aria-label*="Send"], [title*="Send"]')
     if (btn) {
       btn.click()
     } else {
@@ -100,12 +103,43 @@ async function sendMessageToWidget(text) {
   }
 }
 
+async function waitForResponseAndFlags({ maxMs = 8000, pollMs = 200 }) {
+  const start = Date.now()
+  let lastAssistant = ''
+  let lastDebugSig = ''
+  while (Date.now() - start < maxMs) {
+    const txt = extractAssistantTextFromDOM()
+    const dbg = window.__serenityDebug || {}
+    const sig = JSON.stringify({ k: dbg.responseKeys, ar: dbg.actionResultsKeys, raw: !!dbg.rawResponse, ws: !!dbg.lastWSMessage })
+    if (txt && txt !== lastAssistant) {
+      return true
+    }
+    if (sig !== lastDebugSig && (dbg.rawResponse || dbg.lastWSMessage)) {
+      // Network debug changed; give flags extractor a chance
+      await sleep(pollMs)
+      return true
+    }
+    lastAssistant = txt
+    lastDebugSig = sig
+    await sleep(pollMs)
+  }
+  return false
+}
+
 function toCSV(rows) {
-  const header = ['id','label','conversation','response','flag_correct']
+  const header = ['id','label','conversation','response','flag_suicida','flag_clinico','flag_violencia']
   const escape = (s) => '"' + String(s ?? '').replace(/"/g, '""') + '"'
   const lines = [header.join(',')]
   for (const r of rows) {
-    lines.push([r.id, r.label, escape(r.conversation), escape(r.response), r.flag_correct ? 'TRUE' : 'FALSE'].join(','))
+    lines.push([
+      r.id,
+      r.label,
+      escape(r.conversation),
+      escape(r.response),
+      r.flag_suicida ? 'TRUE' : 'FALSE',
+      r.flag_clinico ? 'TRUE' : 'FALSE',
+      r.flag_violencia ? 'TRUE' : 'FALSE',
+    ].join(','))
   }
   return lines.join('\n')
 }
@@ -122,21 +156,16 @@ export default function BatchTester() {
     for (let i = 0; i < phrases.length; i++) {
       const p = phrases[i]
       await sendMessageToWidget(p.conversation)
-      // wait for response to settle
-      await sleep(1600)
+      // wait until DOM response or network debug changes
+      await waitForResponseAndFlags({ maxMs: 8000, pollMs: 250 })
       const responseText = extractAssistantTextFromDOM()
       const flags = inferFlagsFromDebug()
-      const expected = {
-        suicida: 'TendenciaSuicida',
-        clinico: 'PautasDeAlarmaClinicas',
-        violencia: 'ViolenciaRiesgoExtremo',
-        ambiguo: null,
-        control: null,
-      }[p.label]
-      const flagCorrect = expected ? !!flags[expected] : !(flags.TendenciaSuicida || flags.PautasDeAlarmaClinicas || flags.ViolenciaRiesgoExtremo)
-      results.push({ id: p.id, label: p.label, conversation: p.conversation, response: responseText, flag_correct: flagCorrect })
+      const flag_suicida = !!flags.TendenciaSuicida
+      const flag_clinico = !!flags.PautasDeAlarmaClinicas
+      const flag_violencia = !!flags.ViolenciaRiesgoExtremo
+      results.push({ id: p.id, label: p.label, conversation: p.conversation, response: responseText, flag_suicida, flag_clinico, flag_violencia })
       setProgress({ done: i + 1, total: phrases.length })
-      await sleep(400)
+      await sleep(350)
     }
     const csv = toCSV(results)
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
