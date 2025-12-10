@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import './App.css'
 import AlertBanner, { FlagsPanel, FlagIndicator } from './components/AlertBanner.jsx'
+import BatchTester from './components/BatchTester.jsx'
 // Debug panel removed from UI
 import { initSerenityWidget, clearBannerOnUserMessage } from './serenityWidget.js'
 
@@ -71,6 +72,7 @@ function App() {
 
 
       {/* Using only the Widget integration to avoid confusion */}
+      <BatchTester />
     </div>
   )
 }
