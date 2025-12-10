@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { sendUserMessage } from '../serenityWidget.js'
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
@@ -155,10 +156,9 @@ export default function BatchTester() {
     const results = []
     for (let i = 0; i < phrases.length; i++) {
       const p = phrases[i]
-      await sendMessageToWidget(p.conversation)
-      // wait until DOM response or network debug changes
-      await waitForResponseAndFlags({ maxMs: 8000, pollMs: 250 })
-      const responseText = extractAssistantTextFromDOM()
+      const responseText = await sendUserMessage(p.conversation, { waitMs: 10000 })
+      // ensure probes process payloads
+      await waitForResponseAndFlags({ maxMs: 2000, pollMs: 200 })
       const flags = inferFlagsFromDebug()
       const flag_suicida = !!flags.TendenciaSuicida
       const flag_clinico = !!flags.PautasDeAlarmaClinicas

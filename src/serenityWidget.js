@@ -8,6 +8,7 @@ let widgetInstance = null
 let onNoFlagsNextUserMessageCb = null
 let networkProbeInstalled = false
 let wsProbeInstalled = false
+let lastAssistantCallback = null
 let probePollTimer = null
 
 function installNetworkProbe() {
@@ -234,6 +235,8 @@ export function initSerenityWidget({ onFlagsDetected, onNoFlagsNextUserMessage }
             const raw = payload?.raw ?? payload
             const skills = raw?.skills
             handleFlags(skills, onFlagsDetected)
+            // Capture assistant text if available
+            try { if (lastAssistantCallback && raw?.content) lastAssistantCallback(String(raw.content)) } catch {}
           } catch {}
           return payload
         })
@@ -258,6 +261,7 @@ export function initSerenityWidget({ onFlagsDetected, onNoFlagsNextUserMessage }
         const raw = payload?.raw ?? payload
         const skills = raw?.skills
         handleFlags(skills, onFlagsDetected)
+        try { if (lastAssistantCallback && raw?.content) lastAssistantCallback(String(raw.content)) } catch {}
       } catch (e) {
         console.warn('onBeforeRender parse error', e)
       }
@@ -267,6 +271,7 @@ export function initSerenityWidget({ onFlagsDetected, onNoFlagsNextUserMessage }
       try {
         const skills = raw?.skills
         handleFlags(skills, onFlagsDetected)
+        try { if (lastAssistantCallback && raw?.content) lastAssistantCallback(String(raw.content)) } catch {}
       } catch (e) {
         console.warn('onMessage parse error', e)
       }
@@ -287,4 +292,54 @@ function handleFlags(flags, onFlagsDetected) {
 
 export function clearBannerOnUserMessage(cb) {
   onNoFlagsNextUserMessageCb = cb
+}
+
+export function getWidgetInstance() {
+  return widgetInstance
+}
+
+export async function sendUserMessage(text, { waitMs = 8000 } = {}) {
+  // Prefer widget API if available
+  try {
+    const inst = widgetInstance
+    if (inst && typeof inst.sendMessage === 'function') {
+      let resolved = false
+      const prom = new Promise((resolve) => {
+        lastAssistantCallback = (msg) => { if (!resolved) { resolved = true; resolve(msg) } }
+        setTimeout(() => { if (!resolved) { resolved = true; resolve('') } }, waitMs)
+      })
+      inst.sendMessage(text)
+      const msg = await prom
+      lastAssistantCallback = null
+      return msg
+    }
+  } catch {}
+
+  // DOM fallback: type into input and submit
+  const root = document.getElementById('serenity-chat-container')
+  if (!root) return ''
+  const input = root.querySelector('textarea, input[type="text"], [contenteditable="true"], .serenity-input, .chat-input')
+  let resolved = false
+  const prom = new Promise((resolve) => {
+    lastAssistantCallback = (msg) => { if (!resolved) { resolved = true; resolve(msg) } }
+    setTimeout(() => { if (!resolved) { resolved = true; resolve('') } }, waitMs)
+  })
+  if (input) {
+    if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
+      input.value = text
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    } else {
+      input.textContent = text
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const btn = root.querySelector('button[type="submit"], .send, .serenity-send, [aria-label*="Enviar"], [title*="Enviar"], [aria-label*="Send"], [title*="Send"]')
+    if (btn) btn.click();
+    else {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }))
+    }
+  }
+  const msg = await prom
+  lastAssistantCallback = null
+  return msg
 }
