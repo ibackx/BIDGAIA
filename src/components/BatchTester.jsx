@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { sendUserMessage } from '../serenityWidget.js'
+import { createConversation, sendMessage, extractFlagsFromResponse } from '../services/serenityApi.js'
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
@@ -72,37 +72,7 @@ function inferFlagsFromDebug() {
   return flags
 }
 
-async function sendMessageToWidget(text) {
-  // Try AIHubChat API first
-  try {
-    if (window.AIHubChat) {
-      const el = document.getElementById('aihub-chat') || document.getElementById('serenity-chat-container')
-      // Some SDKs expose a global active instance; if not, fallback to DOM
-    }
-  } catch {}
-  // DOM fallback: find input/textarea/contenteditable in widget and simulate send
-  const root = document.getElementById('serenity-chat-container')
-  if (!root) return
-  const input = root.querySelector('textarea, input[type="text"], [contenteditable="true"], .serenity-input, .chat-input')
-  if (input) {
-    if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
-      input.value = text
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    } else {
-      input.textContent = text
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    }
-    // Look for send button
-    const btn = root.querySelector('button[type="submit"], .send, .serenity-send, [aria-label*="Enviar"], [title*="Enviar"], [aria-label*="Send"], [title*="Send"]')
-    if (btn) {
-      btn.click()
-    } else {
-      // Press Enter
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-      input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }))
-    }
-  }
-}
+// Removed widget automation; using HTTP API client instead
 
 async function waitForResponseAndFlags({ maxMs = 8000, pollMs = 200 }) {
   const start = Date.now()
@@ -154,18 +124,27 @@ export default function BatchTester() {
     const phrases = await loadPhrases()
     setProgress({ done: 0, total: phrases.length })
     const results = []
+    // Create a conversation once and reuse chatId to keep context minimal
+    let chatId = null
+    try { chatId = await createConversation({}) } catch (e) { console.error('createConversation error', e) }
+    if (!chatId) { alert('No se pudo crear la conversación'); setRunning(false); return }
     for (let i = 0; i < phrases.length; i++) {
       const p = phrases[i]
-      const responseText = await sendUserMessage(p.conversation, { waitMs: 10000 })
-      // ensure probes process payloads
-      await waitForResponseAndFlags({ maxMs: 2000, pollMs: 200 })
-      const flags = inferFlagsFromDebug()
+      let responseObj = null
+      try {
+        responseObj = await sendMessage({ chatId, message: p.conversation })
+      } catch (e) {
+        console.error('sendMessage error', e)
+        responseObj = null
+      }
+      const responseText = String(responseObj?.content ?? '')
+      const flags = extractFlagsFromResponse(responseObj || {})
       const flag_suicida = !!flags.TendenciaSuicida
       const flag_clinico = !!flags.PautasDeAlarmaClinicas
       const flag_violencia = !!flags.ViolenciaRiesgoExtremo
       results.push({ id: p.id, label: p.label, conversation: p.conversation, response: responseText, flag_suicida, flag_clinico, flag_violencia })
       setProgress({ done: i + 1, total: phrases.length })
-      await sleep(350)
+      await sleep(1000) // pacing ~1 req/sec per guidance
     }
     const csv = toCSV(results)
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
