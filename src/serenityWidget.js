@@ -316,9 +316,9 @@ export async function sendUserMessage(text, { waitMs = 8000 } = {}) {
   } catch {}
 
   // DOM fallback: type into input and submit
-  const root = document.getElementById('serenity-chat-container')
+  const root = document.getElementById('aihub-chat') || document.getElementById('serenity-chat-container')
   if (!root) return ''
-  const input = root.querySelector('textarea, input[type="text"], [contenteditable="true"], .serenity-input, .chat-input')
+  const input = root.querySelector('textarea, input[type="text"], [contenteditable="true"], .serenity-input, .chat-input, input, .input')
   let resolved = false
   const prom = new Promise((resolve) => {
     lastAssistantCallback = (msg) => { if (!resolved) { resolved = true; resolve(msg) } }
@@ -332,7 +332,7 @@ export async function sendUserMessage(text, { waitMs = 8000 } = {}) {
       input.textContent = text
       input.dispatchEvent(new Event('input', { bubbles: true }))
     }
-    const btn = root.querySelector('button[type="submit"], .send, .serenity-send, [aria-label*="Enviar"], [title*="Enviar"], [aria-label*="Send"], [title*="Send"]')
+    const btn = root.querySelector('button[type="submit"], .send, .serenity-send, [aria-label*="Enviar"], [title*="Enviar"], [aria-label*="Send"], [title*="Send"], button, .button')
     if (btn) btn.click();
     else {
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
