@@ -33,6 +33,7 @@ export function extractFlagsFromResponse(response) {
   let flags = { TendenciaSuicida: false, PautasDeAlarmaClinicas: false, ViolenciaRiesgoExtremo: false }
   try {
     const ar = response?.action_results || null
+    // 1) Preferred: explicit flags array from ConditionChecker
     if (ar?.ConditionChecker?.result?.flags && Array.isArray(ar.ConditionChecker.result.flags)) {
       const arr = ar.ConditionChecker.result.flags
       flags = {
@@ -40,12 +41,52 @@ export function extractFlagsFromResponse(response) {
         PautasDeAlarmaClinicas: arr.includes('PautasDeAlarmaClinicas'),
         ViolenciaRiesgoExtremo: arr.includes('ViolenciaRiesgoExtremo'),
       }
-    } else {
-      const out = response?.skills?.CheckCondition?.output
-      const content = out?.content
-      if (content === true || content === 'true') {
-        // When only a boolean is present, we cannot know which flag; keep defaults
+      return flags
+    }
+
+    // 2) Skill-specific objects: inspect known keys and their result/output/content booleans
+    if (ar && typeof ar === 'object') {
+      const norm = (v) => {
+        if (v === true || v === 'true') return true
+        if (v && typeof v === 'object') {
+          if (v.json_content === true) return true
+          if (v.content === true || v.content === 'true') return true
+          if (v.output && (v.output.content === true || v.output.content === 'true')) return true
+          if (v.output && v.output.type === 'CheckCondition' && (v.output.content === true || v.output.content === 'true')) return true
+          if (v.result && (v.result.content === true || v.result === true)) return true
+        }
+        return false
       }
+      // Direct named skills
+      const ts = ar.TendenciaSuicida?.result ?? ar.TendenciaSuicida?.output ?? ar.TendenciaSuicida
+      const ac = ar.PautasDeAlarmaClinicas?.result ?? ar.PautasDeAlarmaClinicas?.output ?? ar.PautasDeAlarmaClinicas
+      const ve = ar.ViolenciaRiesgoExtremo?.result ?? ar.ViolenciaRiesgoExtremo?.output ?? ar.ViolenciaRiesgoExtremo
+      if (norm(ts) || norm(ac) || norm(ve)) {
+        flags = {
+          TendenciaSuicida: norm(ts),
+          PautasDeAlarmaClinicas: norm(ac),
+          ViolenciaRiesgoExtremo: norm(ve),
+        }
+        return flags
+      }
+      // Scan generic entries for CheckCondition
+      const mapped = { ...flags }
+      for (const [k, v] of Object.entries(ar)) {
+        const out = v?.output ?? v?.result ?? v
+        if (out?.type === 'CheckCondition' && (out.content === true || out.content === 'true')) {
+          if (k.includes('TendenciaSuicida')) mapped.TendenciaSuicida = true
+          if (k.includes('PautasDeAlarmaClinicas')) mapped.PautasDeAlarmaClinicas = true
+          if (k.includes('Violencia') || k.includes('RiesgoExtremo')) mapped.ViolenciaRiesgoExtremo = true
+        }
+      }
+      if (mapped.TendenciaSuicida || mapped.PautasDeAlarmaClinicas || mapped.ViolenciaRiesgoExtremo) return mapped
+    }
+
+    // 3) skills.CheckCondition as a boolean: keep defaults if unknown which
+    const out = response?.skills?.CheckCondition?.output
+    if (out && (out.content === true || out.content === 'true')) {
+      // Unknown specific flag; leave as false for each to avoid false positives
+      return flags
     }
   } catch {}
   return flags
