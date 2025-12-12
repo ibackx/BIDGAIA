@@ -32,6 +32,34 @@ export async function sendMessage({ chatId, message, agentCode = AGENT_CODE, api
 export function extractFlagsFromResponse(response) {
   let flags = { TendenciaSuicida: false, PautasDeAlarmaClinicas: false, ViolenciaRiesgoExtremo: false }
   try {
+    // 0) skillsResults array variant (as seen in SerenityAPIChat.jsx)
+    if (Array.isArray(response?.skillsResults)) {
+      // Prefer an entry with explicit result.flags
+      const withFlags = response.skillsResults.find((s) => s?.result && typeof s.result.flags === 'object')
+      if (withFlags) {
+        const f = withFlags.result.flags
+        return {
+          TendenciaSuicida: !!(f?.TendenciaSuicida || (Array.isArray(f) && f.includes('TendenciaSuicida'))),
+          PautasDeAlarmaClinicas: !!(f?.PautasDeAlarmaClinicas || (Array.isArray(f) && f.includes('PautasDeAlarmaClinicas'))),
+          ViolenciaRiesgoExtremo: !!(f?.ViolenciaRiesgoExtremo || (Array.isArray(f) && f.includes('ViolenciaRiesgoExtremo'))),
+        }
+      }
+      // Otherwise inspect each skill's output/result booleans and names
+      const mapped = { ...flags }
+      for (const s of response.skillsResults) {
+        const name = String(s?.name || '')
+        const out = s?.output ?? s?.result ?? s
+        const val = out?.content ?? out?.json_content ?? out
+        const isTrue = val === true || val === 'true'
+        if (out?.type === 'CheckCondition' && isTrue) {
+          if (name.includes('TendenciaSuicida')) mapped.TendenciaSuicida = true
+          if (name.includes('PautasDeAlarmaClinicas')) mapped.PautasDeAlarmaClinicas = true
+          if (name.includes('Violencia') || name.includes('RiesgoExtremo')) mapped.ViolenciaRiesgoExtremo = true
+        }
+      }
+      if (mapped.TendenciaSuicida || mapped.PautasDeAlarmaClinicas || mapped.ViolenciaRiesgoExtremo) return mapped
+    }
+
     const ar = response?.action_results || null
     // 1) Preferred: explicit flags array from ConditionChecker
     if (ar?.ConditionChecker?.result?.flags && Array.isArray(ar.ConditionChecker.result.flags)) {
