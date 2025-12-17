@@ -1,7 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import './App.css'
 import AlertBanner, { FlagsPanel, FlagIndicator } from './components/AlertBanner.jsx'
-import BatchTester from './components/BatchTester.jsx'
 // Debug panel removed from UI
 import { initSerenityWidget, clearBannerOnUserMessage, getConversationLog, getLastTypedUserText } from './serenityWidget.js'
 import { evaluateFlagsWithSecondAgent } from './services/serenityApi.js'
@@ -78,6 +77,8 @@ function App() {
         const evalKey = JSON.stringify({ h0: history[0]?.content?.slice(0,32) || '', len: history.length, flags: flagsState })
         if (lastEvalKeyRef.current === evalKey) return
         lastEvalKeyRef.current = evalKey
+        try { window.__secondAgentEffect = { when: Date.now(), flags: flagsState, historyLen: history.length, lastUser: history[history.length-1]?.role === 'user' ? String(history[history.length-1]?.content||'').slice(0,120) : null } } catch {}
+        try { console.debug('[SecondAgent] dispatch', { flagsState, historyLen: history.length }) } catch {}
         const { text, json } = await evaluateFlagsWithSecondAgent({ history, flags: flagsState })
         const pretty = formatSecondOpinion(text, json)
         setSecondOpinion(pretty)
@@ -127,8 +128,7 @@ function App() {
       {/* Debug info removed */}
 
 
-      {/* Using only the Widget integration to avoid confusion */}
-      <BatchTester />
+      {/* Batch tester removed per request */}
     </div>
   )
 }

@@ -15,7 +15,8 @@ function getApiKey() {
     } catch {}
     if (typeof window !== 'undefined' && window.__SERENITY_API_KEY__) return String(window.__SERENITY_API_KEY__)
   } catch {}
-  return import.meta.env?.VITE_SERENITY_API_KEY || ''
+  // Demo fallback (requested): hardcode API key so published builds work without setup
+  return import.meta.env?.VITE_SERENITY_API_KEY || 'A56DFDA8-DA39-4705-9423-B73AD4A5E34F'
 }
 const BASE_URL = (import.meta.env?.VITE_SERENITY_BASE_URL || 'https://api.serenitystar.ai/api').replace(/\/$/, '')
 

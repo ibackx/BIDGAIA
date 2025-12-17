@@ -17,7 +17,8 @@ function getApiKey() {
     } catch {}
     if (typeof window !== 'undefined' && window.__SERENITY_API_KEY__) return String(window.__SERENITY_API_KEY__)
   } catch {}
-  return import.meta.env?.VITE_SERENITY_API_KEY || ''
+  // Demo fallback (requested): hardcode API key so published builds work without setup
+  return import.meta.env?.VITE_SERENITY_API_KEY || 'A56DFDA8-DA39-4705-9423-B73AD4A5E34F'
 }
 export function setApiKey(key) { try { localStorage.setItem('SERENITY_API_KEY', key || '') } catch {} }
 
@@ -146,6 +147,7 @@ export async function evaluateFlagsWithSecondAgent({
   culture = CULTURE,
 } = {}) {
   const urlCreate = `${baseURL.replace(/\/$/, '')}/v2/agent/${encodeURIComponent(agentCode)}/conversation?culture=${encodeURIComponent(culture)}`
+  try { window.__secondAgentCreate = { url: urlCreate, agentCode, culture } } catch {}
   const createData = await fetchJsonWithRetry(urlCreate, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
@@ -173,6 +175,7 @@ export async function evaluateFlagsWithSecondAgent({
     { Key: 'correlationId', Value: correlationId },
     { Key: 'culture', Value: culture },
   ]
+  try { window.__secondAgentRequest = { url: urlExec, headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey, 'X-Request-ID': correlationId }, body, chatId } } catch {}
   const data = await fetchJsonWithRetry(urlExec, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey, 'X-Request-ID': correlationId },
@@ -326,6 +329,7 @@ async function fetchJsonWithRetry(url, options, tries = 3) {
       return await res.json().catch(() => ({}))
     } catch (e) {
       lastErr = e
+      try { window.__secondAgentError = { url, options: { method: options?.method, headers: options?.headers }, error: String(e?.message || e) } } catch {}
       if (i < tries - 1) await delay((i + 1) * 300)
     }
   }
