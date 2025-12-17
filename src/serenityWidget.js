@@ -1,7 +1,22 @@
 /* Serenity Chat Widget integration helpers */
 
 const AGENT_ID = import.meta.env?.VITE_SERENITY_AGENT_CODE || 'GAIAComunidad'
-const API_KEY = import.meta.env?.VITE_SERENITY_API_KEY || ''
+function getApiKey() {
+  try {
+    const qs = typeof location !== 'undefined' ? new URLSearchParams(location.search) : null
+    const fromQs = (qs && (qs.get('apiKey') || qs.get('key'))) || ''
+    if (fromQs) {
+      try { localStorage.setItem('SERENITY_API_KEY', fromQs) } catch {}
+      return fromQs
+    }
+    try {
+      const fromLS = localStorage.getItem('SERENITY_API_KEY')
+      if (fromLS) return fromLS
+    } catch {}
+    if (typeof window !== 'undefined' && window.__SERENITY_API_KEY__) return String(window.__SERENITY_API_KEY__)
+  } catch {}
+  return import.meta.env?.VITE_SERENITY_API_KEY || ''
+}
 const BASE_URL = (import.meta.env?.VITE_SERENITY_BASE_URL || 'https://api.serenitystar.ai/api').replace(/\/$/, '')
 
 let widgetInstance = null
@@ -232,7 +247,7 @@ export function initSerenityWidget({ onFlagsDetected, onNoFlagsNextUserMessage, 
         return
       }
       const chat = new AIHubChat('aihub-chat', {
-        apiKey: API_KEY,
+        apiKey: getApiKey(),
         agentCode: AGENT_ID,
         baseURL: BASE_URL,
         onAgentResponse: (response) => {

@@ -1,10 +1,27 @@
 const BASE_URL = (import.meta.env?.VITE_SERENITY_BASE_URL || 'https://api.serenitystar.ai/api').replace(/\/$/, '')
 const AGENT_CODE = import.meta.env?.VITE_SERENITY_AGENT_CODE || 'GAIAComunidad'
-const API_KEY = import.meta.env?.VITE_SERENITY_API_KEY || ''
 const SECOND_AGENT_CODE = import.meta.env?.VITE_SECOND_AGENT_CODE || 'GAIARSA'
 const CULTURE = import.meta.env?.VITE_CULTURE || 'es-AR'
 
-export async function createConversation({ agentCode = AGENT_CODE, apiKey = API_KEY, culture = 'en' } = {}) {
+function getApiKey() {
+  try {
+    const qs = typeof location !== 'undefined' ? new URLSearchParams(location.search) : null
+    const fromQs = (qs && (qs.get('apiKey') || qs.get('key'))) || ''
+    if (fromQs) {
+      try { localStorage.setItem('SERENITY_API_KEY', fromQs) } catch {}
+      return fromQs
+    }
+    try {
+      const fromLS = localStorage.getItem('SERENITY_API_KEY')
+      if (fromLS) return fromLS
+    } catch {}
+    if (typeof window !== 'undefined' && window.__SERENITY_API_KEY__) return String(window.__SERENITY_API_KEY__)
+  } catch {}
+  return import.meta.env?.VITE_SERENITY_API_KEY || ''
+}
+export function setApiKey(key) { try { localStorage.setItem('SERENITY_API_KEY', key || '') } catch {} }
+
+export async function createConversation({ agentCode = AGENT_CODE, apiKey = getApiKey(), culture = 'en' } = {}) {
   const url = `${BASE_URL}/v2/agent/${encodeURIComponent(agentCode)}/conversation?culture=${encodeURIComponent(culture)}`
   const data = await fetchJsonWithRetry(url, {
     method: 'POST',
@@ -14,7 +31,7 @@ export async function createConversation({ agentCode = AGENT_CODE, apiKey = API_
   return data.chatId
 }
 
-export async function sendMessage({ chatId, message, agentCode = AGENT_CODE, apiKey = API_KEY }) {
+export async function sendMessage({ chatId, message, agentCode = AGENT_CODE, apiKey = getApiKey() }) {
   const url = `${BASE_URL}/v2/agent/${encodeURIComponent(agentCode)}/execute`
   const body = [
     { Key: 'message', Value: String(message ?? '') },
@@ -124,7 +141,7 @@ export async function evaluateFlagsWithSecondAgent({
   history = [],
   flags = {},
   agentCode = SECOND_AGENT_CODE,
-  apiKey = API_KEY,
+  apiKey = getApiKey(),
   baseURL = BASE_URL,
   culture = CULTURE,
 } = {}) {
