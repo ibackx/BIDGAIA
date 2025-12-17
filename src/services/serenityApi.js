@@ -1,15 +1,15 @@
 const BASE_URL = (import.meta.env?.VITE_SERENITY_BASE_URL || 'https://api.serenitystar.ai/api').replace(/\/$/, '')
 const AGENT_CODE = import.meta.env?.VITE_SERENITY_AGENT_CODE || 'GAIAComunidad'
-const API_KEY = import.meta.env?.VITE_SERENITY_API_KEY || 'A56DFDA8-DA39-4705-9423-B73AD4A5E34F'
+const API_KEY = import.meta.env?.VITE_SERENITY_API_KEY || ''
+const SECOND_AGENT_CODE = import.meta.env?.VITE_SECOND_AGENT_CODE || 'GAIARSA'
+const CULTURE = import.meta.env?.VITE_CULTURE || 'es-AR'
 
 export async function createConversation({ agentCode = AGENT_CODE, apiKey = API_KEY, culture = 'en' } = {}) {
   const url = `${BASE_URL}/v2/agent/${encodeURIComponent(agentCode)}/conversation?culture=${encodeURIComponent(culture)}`
-  const res = await fetch(url, {
+  const data = await fetchJsonWithRetry(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
   })
-  if (!res.ok) throw new Error(`createConversation failed: ${res.status}`)
-  const data = await res.json().catch(() => ({}))
   if (!data.chatId) throw new Error('createConversation: missing chatId')
   return data.chatId
 }
@@ -119,3 +119,200 @@ export function extractFlagsFromResponse(response) {
   } catch {}
   return flags
 }
+
+export async function evaluateFlagsWithSecondAgent({
+  history = [],
+  flags = {},
+  agentCode = SECOND_AGENT_CODE,
+  apiKey = API_KEY,
+  baseURL = BASE_URL,
+  culture = CULTURE,
+} = {}) {
+  const urlCreate = `${baseURL.replace(/\/$/, '')}/v2/agent/${encodeURIComponent(agentCode)}/conversation?culture=${encodeURIComponent(culture)}`
+  const createData = await fetchJsonWithRetry(urlCreate, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
+  })
+  const chatId = createData.chatId
+  if (!chatId) throw new Error('secondAgent.createConversation: missing chatId')
+
+  const flagsArray = flagsToArray(flags)
+  const truncated = history.map((m) => ({ role: m.role, content: String(m.content || '') })).slice(-12)
+  const historyLines = truncated.map((m) => `${m.role === 'assistant' ? 'Agente' : 'Usuario'}: ${m.content}`).join('\n')
+  const correlationId = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  const message = [
+    'Historial:',
+    historyLines || '(sin mensajes previos)',
+    '',
+    `Flags detectados: ${flagsArray.join(', ') || 'ninguno'}`,
+  ].join('\n')
+
+  const urlExec = `${baseURL.replace(/\/$/, '')}/v2/agent/${encodeURIComponent(agentCode)}/execute`
+  const body = [
+    { Key: 'message', Value: message },
+    { Key: 'chatId', Value: String(chatId) },
+    { Key: 'flags', Value: flagsArray.join(',') },
+    { Key: 'flagsJson', Value: JSON.stringify(flagsArray) },
+    { Key: 'correlationId', Value: correlationId },
+    { Key: 'culture', Value: culture },
+  ]
+  const data = await fetchJsonWithRetry(urlExec, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey, 'X-Request-ID': correlationId },
+    body: JSON.stringify(body),
+  })
+  const { text, json } = extractAssistantResult(data)
+  try { window.__secondAgentDebug = { chatId, response: data, textCandidate: text, jsonCandidate: json } } catch {}
+  return { chatId, response: data, text, json }
+}
+
+function extractAssistantResult(resp) {
+  try {
+    if (!resp) return { text: '', json: null }
+    // Prefer explicit json fields
+    const jc = resp.json_content || resp.jsonContent || null
+    if (jc && typeof jc === 'object') {
+      const text = resp.content || resp.message || ''
+      return { text, json: jc }
+    }
+    if (typeof resp.content === 'string') {
+      const parsed = parseJsonFromCodeFence(resp.content)
+      if (parsed) return { text: resp.content, json: parsed }
+      return { text: resp.content, json: null }
+    }
+    if (typeof resp.message === 'string') {
+      const parsed = parseJsonFromCodeFence(resp.message)
+      if (parsed) return { text: resp.message, json: parsed }
+      return { text: resp.message, json: null }
+    }
+    if (resp.result) {
+      if (resp.result.json_content && typeof resp.result.json_content === 'object') {
+        const t = resp.result.content || resp.result.message || ''
+        return { text: t, json: resp.result.json_content }
+      }
+      if (typeof resp.result.content === 'string') {
+        const parsed = parseJsonFromCodeFence(resp.result.content)
+        if (parsed) return { text: resp.result.content, json: parsed }
+        return { text: resp.result.content, json: null }
+      }
+      if (resp.result.output && typeof resp.result.output.content === 'string') {
+        const parsed = parseJsonFromCodeFence(resp.result.output.content)
+        if (parsed) return { text: resp.result.output.content, json: parsed }
+        return { text: resp.result.output.content, json: null }
+      }
+      if (Array.isArray(resp.result.skillsResults)) {
+        for (const s of resp.result.skillsResults) {
+          const out = s?.output ?? s?.result ?? s
+          if (out?.json_content && typeof out.json_content === 'object') return { text: out.content || '', json: out.json_content }
+          if (typeof out?.content === 'string') {
+            const parsed = parseJsonFromCodeFence(out.content)
+            if (parsed) return { text: out.content, json: parsed }
+            return { text: out.content, json: null }
+          }
+        }
+      }
+    }
+    const ar = resp.action_results || resp.skills || null
+    if (ar && typeof ar === 'object') {
+      const texts = []
+      for (const v of Object.values(ar)) {
+        const out = v?.output ?? v?.result ?? v
+        if (out?.json_content && typeof out.json_content === 'object') return { text: out.content || '', json: out.json_content }
+        const c = out?.content ?? out?.text
+        if (typeof c === 'string') {
+          const parsed = parseJsonFromCodeFence(c)
+          if (parsed) return { text: c, json: parsed }
+          texts.push(c)
+        }
+      }
+      if (texts.length) return { text: texts.join('\n\n'), json: null }
+    }
+    if (Array.isArray(resp.skillsResults)) {
+      for (const s of resp.skillsResults) {
+        const out = s?.output ?? s?.result ?? s
+        if (out?.json_content && typeof out.json_content === 'object') return { text: out.content || '', json: out.json_content }
+        if (typeof out?.content === 'string') {
+          const parsed = parseJsonFromCodeFence(out.content)
+          if (parsed) return { text: out.content, json: parsed }
+          return { text: out.content, json: null }
+        }
+      }
+    }
+    // Deep search for any "content"/"text" string
+    const found = deepFindContentString(resp)
+    if (found) {
+      const parsed = parseJsonFromCodeFence(found)
+      return { text: found, json: parsed }
+    }
+  } catch {}
+  try { return { text: JSON.stringify(resp, null, 2), json: null } } catch { return { text: '', json: null } }
+}
+
+function deepFindContentString(obj, limit = 3000) {
+  try {
+    const stack = [obj]
+    const seen = new Set()
+    let budget = limit
+    while (stack.length && budget-- > 0) {
+      const cur = stack.pop()
+      if (!cur || typeof cur !== 'object' || seen.has(cur)) continue
+      seen.add(cur)
+      if (Array.isArray(cur)) { for (const it of cur) stack.push(it); continue }
+      for (const [k, v] of Object.entries(cur)) {
+        if (typeof v === 'string' && (k.toLowerCase().includes('content') || k.toLowerCase().includes('text') || k.toLowerCase().includes('message'))) {
+          if (v.trim()) return v
+        }
+        if (v && typeof v === 'object') stack.push(v)
+      }
+    }
+  } catch {}
+  return ''
+}
+
+function parseJsonFromCodeFence(text) {
+  try {
+    if (!text || typeof text !== 'string') return null
+    const fence = /```(?:json)?\n([\s\S]*?)```/i
+    const m = text.match(fence)
+    const raw = m ? m[1] : null
+    const candidate = raw || null
+    if (candidate) {
+      return JSON.parse(candidate)
+    }
+  } catch {}
+  return null
+}
+
+function flagsToArray(f = {}) {
+  try {
+    const out = []
+    if (f.TendenciaSuicida) out.push('TendenciaSuicida')
+    if (f.PautasDeAlarmaClinicas) out.push('PautasDeAlarmaClinicas')
+    if (f.ViolenciaRiesgoExtremo) out.push('ViolenciaRiesgoExtremo')
+    for (const [k, v] of Object.entries(f)) {
+      if (!['TendenciaSuicida','PautasDeAlarmaClinicas','ViolenciaRiesgoExtremo'].includes(k) && v === true) out.push(k)
+    }
+    return out
+  } catch { return [] }
+}
+
+async function fetchJsonWithRetry(url, options, tries = 3) {
+  let lastErr = null
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(url, options)
+      if (res.status === 429 && i < tries - 1) {
+        await delay((i + 1) * 300)
+        continue
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return await res.json().catch(() => ({}))
+    } catch (e) {
+      lastErr = e
+      if (i < tries - 1) await delay((i + 1) * 300)
+    }
+  }
+  throw lastErr || new Error('fetchJsonWithRetry failed')
+}
+
+function delay(ms) { return new Promise((r) => setTimeout(r, ms)) }

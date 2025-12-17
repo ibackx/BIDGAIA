@@ -1,21 +1,81 @@
 /* Serenity Chat Widget integration helpers */
 
 const AGENT_ID = import.meta.env?.VITE_SERENITY_AGENT_CODE || 'GAIAComunidad'
-const API_KEY = import.meta.env?.VITE_SERENITY_API_KEY || 'A56DFDA8-DA39-4705-9423-B73AD4A5E34F'
+const API_KEY = import.meta.env?.VITE_SERENITY_API_KEY || ''
 const BASE_URL = (import.meta.env?.VITE_SERENITY_BASE_URL || 'https://api.serenitystar.ai/api').replace(/\/$/, '')
 
 let widgetInstance = null
+let conversationLog = []
 let onNoFlagsNextUserMessageCb = null
 let networkProbeInstalled = false
 let wsProbeInstalled = false
 let lastAssistantCallback = null
 let probePollTimer = null
+let primaryChatId = null
+let lastTypedUserText = ''
+let lastPushedUserText = ''
+let pendingClearOnNextNoFlag = false
 
 function installNetworkProbe() {
   if (networkProbeInstalled) return
   networkProbeInstalled = true
   const origFetch = window.fetch
   window.fetch = async function(...args) {
+    try {
+      // Capture outgoing user messages to build conversation history
+      const reqInfo = args[0]
+      const reqInit = args[1] || {}
+      let url = ''
+      let method = ''
+      let body = null
+      if (typeof reqInfo === 'string') {
+        url = reqInfo
+        method = String((reqInit.method || 'GET')).toUpperCase()
+        body = reqInit.body || null
+      } else if (reqInfo && typeof reqInfo === 'object') {
+        url = reqInfo.url || ''
+        method = String((reqInfo.method || 'GET')).toUpperCase()
+        // Best-effort body extraction from Request or init
+        body = reqInfo.body || reqInit.body || null
+      }
+      // Extract agentCode from URL if present: /v2/agent/{agentCode}/...
+      let urlAgentCode = null
+      try {
+        const m = url.match(/\/v2\/agent\/([^/]+)\//)
+        if (m && m[1]) urlAgentCode = decodeURIComponent(m[1])
+      } catch {}
+
+      // When the primary chat starts a fresh conversation, clear history
+      if (url.includes('/v2/agent/') && url.endsWith('/conversation') && method === 'POST') {
+        if (urlAgentCode && urlAgentCode === AGENT_ID) {
+          try { conversationLog = [] } catch {}
+          // We'll capture chatId from the response below
+        }
+      }
+
+      if (url.includes('/v2/agent/') && url.endsWith('/execute') && method === 'POST' && typeof body === 'string') {
+        // Only record messages for the PRIMARY agent chatId
+        try {
+          const parsed = JSON.parse(body)
+          if (Array.isArray(parsed)) {
+              const chatEntry = parsed.find((e) => e && e.Key === 'chatId')
+              const postedChatId = chatEntry?.Value ? String(chatEntry.Value) : null
+              // Initialize primaryChatId if missing and this is the primary agent
+              if (!primaryChatId && urlAgentCode === AGENT_ID && postedChatId) primaryChatId = postedChatId
+              if (!postedChatId || postedChatId !== primaryChatId) {
+                // Different chat (likely second agent) → ignore
+              } else {
+            const msgEntry = parsed.find((e) => e && e.Key === 'message')
+            const msgVal = msgEntry?.Value
+            if (msgVal) conversationLog.push({ role: 'user', content: String(msgVal) })
+            // Mark that the next no-flag event after a user message should clear UI
+            pendingClearOnNextNoFlag = true
+              }
+          }
+        } catch {}
+      }
+    } catch {}
+
     const res = await origFetch.apply(this, args)
     try {
       const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '')
@@ -30,6 +90,16 @@ function installNetworkProbe() {
           window.__serenityDebug.responseKeys = data ? Object.keys(data) : []
           const ar = data?.action_results || data?.result || data?.skills || null
           window.__serenityDebug.actionResultsKeys = ar ? Object.keys(ar) : []
+          // Capture chatId on conversation creation for primary agent
+          if (url.includes('/v2/agent/') && url.endsWith('/conversation')) {
+            try {
+              const m = url.match(/\/v2\/agent\/([^/]+)\//)
+              const agentFromUrl = m && m[1] ? decodeURIComponent(m[1]) : null
+              if (agentFromUrl === AGENT_ID && data?.chatId) {
+                primaryChatId = String(data.chatId)
+              }
+            } catch {}
+          }
         } catch {}
       }
     } catch {}
@@ -65,9 +135,33 @@ function installWebSocketProbe() {
     return ws
   }
   window.WebSocket.prototype = OrigWS.prototype
+  // Intercept outgoing frames to capture user messages with chatId
+  try {
+    const _send = OrigWS.prototype.send
+    OrigWS.prototype.send = function(data) {
+      try {
+        let payload = null
+        if (typeof data === 'string') {
+          try { payload = JSON.parse(data) } catch {}
+        } else if (data && typeof data === 'object') {
+          try { payload = JSON.parse(data.toString()) } catch {}
+        }
+        const msg = payload?.message || payload?.data?.message || null
+        const cid = payload?.chatId || payload?.data?.chatId || null
+        if (msg) lastTypedUserText = String(msg)
+        if (msg && cid && primaryChatId && cid === primaryChatId) {
+          if (lastPushedUserText !== String(msg)) {
+            conversationLog.push({ role: 'user', content: String(msg) })
+            lastPushedUserText = String(msg)
+          }
+        }
+      } catch {}
+      return _send.apply(this, arguments)
+    }
+  } catch {}
 }
 
-export function initSerenityWidget({ onFlagsDetected, onNoFlagsNextUserMessage }) {
+export function initSerenityWidget({ onFlagsDetected, onNoFlagsNextUserMessage, useAIHubForPrimary = false }) {
   onNoFlagsNextUserMessageCb = onNoFlagsNextUserMessage
   try { installNetworkProbe() } catch {}
   try { installWebSocketProbe() } catch {}
@@ -128,14 +222,15 @@ export function initSerenityWidget({ onFlagsDetected, onNoFlagsNextUserMessage }
     }
   } catch {}
 
-  const container = document.getElementById('serenity-chat-container')
-  if (!container) {
-    console.error('Chat container not found: #serenity-chat-container')
-    return
-  }
-
-  if (window.AIHubChat) {
+  // If using AIHubChat as the primary widget, initialize it first and skip Serenity container check
+  if (useAIHubForPrimary && window.AIHubChat) {
     try {
+      const aiHubContainerId = 'aihub-chat'
+      const aiHubEl = document.getElementById(aiHubContainerId)
+      if (!aiHubEl) {
+        console.error('Chat container not found: #aihub-chat')
+        return
+      }
       const chat = new AIHubChat('aihub-chat', {
         apiKey: API_KEY,
         agentCode: AGENT_ID,
@@ -203,6 +298,11 @@ export function initSerenityWidget({ onFlagsDetected, onNoFlagsNextUserMessage }
                 window.__serenityDebug.actionResultsKeys = ar ? Object.keys(ar) : []
               }
             } catch {}
+            // Log assistant content if available
+            try {
+              const content = typeof response?.content === 'string' ? response.content : null
+              if (content) conversationLog.push({ role: 'assistant', content })
+            } catch {}
             handleFlags(flags, onFlagsDetected)
           } catch (err) {
             console.warn('onAgentResponse error:', err)
@@ -211,6 +311,26 @@ export function initSerenityWidget({ onFlagsDetected, onNoFlagsNextUserMessage }
       })
       chat.init()
       widgetInstance = chat
+
+      // Wrap sendMessage to capture user text when invoked programmatically
+      try {
+        if (typeof chat.sendMessage === 'function') {
+          const _origSend = chat.sendMessage.bind(chat)
+          chat.sendMessage = function(text, ...rest) {
+            try {
+              const t = typeof text === 'string' ? text : (text?.content || '')
+              if (t) {
+                lastTypedUserText = String(t)
+                if (lastPushedUserText !== lastTypedUserText) {
+                  conversationLog.push({ role: 'user', content: lastTypedUserText })
+                  lastPushedUserText = lastTypedUserText
+                }
+              }
+            } catch {}
+            return _origSend(text, ...rest)
+          }
+        }
+      } catch {}
 
       if (typeof chat.on === 'function') {
         chat.on('message', (raw) => {
@@ -223,17 +343,21 @@ export function initSerenityWidget({ onFlagsDetected, onNoFlagsNextUserMessage }
             window.__serenityDebug.actionResultsKeys = ar ? Object.keys(ar) : []
 
             const skills = raw?.skills
+            try { if (raw?.content) conversationLog.push({ role: 'assistant', content: String(raw.content) }) } catch {}
             handleFlags(skills, onFlagsDetected)
           } catch (e) {
             console.warn('AIHubChat message parse error', e)
           }
         })
       }
+      // Capture user input from DOM as a fallback
+      try { installInputCapture('aihub-chat') } catch {}
       if (typeof chat.onBeforeRender === 'function') {
         chat.onBeforeRender((payload) => {
           try {
             const raw = payload?.raw ?? payload
             const skills = raw?.skills
+            try { if (raw?.content) conversationLog.push({ role: 'assistant', content: String(raw.content) }) } catch {}
             handleFlags(skills, onFlagsDetected)
             // Capture assistant text if available
             try { if (lastAssistantCallback && raw?.content) lastAssistantCallback(String(raw.content)) } catch {}
@@ -245,6 +369,13 @@ export function initSerenityWidget({ onFlagsDetected, onNoFlagsNextUserMessage }
     } catch (e) {
       console.error('Failed to init AIHubChat:', e)
     }
+  }
+
+  // From here, proceed with SerenityChatWidget fallback which requires #serenity-chat-container
+  const container = document.getElementById('serenity-chat-container')
+  if (!container) {
+    console.error('Chat container not found: #serenity-chat-container')
+    return
   }
 
   if (!window.SerenityChatWidget || !window.SerenityChatWidget.init) {
@@ -260,6 +391,7 @@ export function initSerenityWidget({ onFlagsDetected, onNoFlagsNextUserMessage }
       try {
         const raw = payload?.raw ?? payload
         const skills = raw?.skills
+        try { if (raw?.content) conversationLog.push({ role: 'assistant', content: String(raw.content) }) } catch {}
         handleFlags(skills, onFlagsDetected)
         try { if (lastAssistantCallback && raw?.content) lastAssistantCallback(String(raw.content)) } catch {}
       } catch (e) {
@@ -270,22 +402,60 @@ export function initSerenityWidget({ onFlagsDetected, onNoFlagsNextUserMessage }
     onMessage: (raw) => {
       try {
         const skills = raw?.skills
+        try { if (raw?.content) conversationLog.push({ role: 'assistant', content: String(raw.content) }) } catch {}
         handleFlags(skills, onFlagsDetected)
         try { if (lastAssistantCallback && raw?.content) lastAssistantCallback(String(raw.content)) } catch {}
       } catch (e) {
         console.warn('onMessage parse error', e)
       }
     },
-    onUserMessage: () => {},
+    onUserMessage: (text) => {
+      try {
+        const content = typeof text === 'string' ? text : (text?.content || '')
+        if (content) conversationLog.push({ role: 'user', content: String(content) })
+      } catch {}
+    },
   })
 }
 
 function handleFlags(flags, onFlagsDetected) {
-  const hasAny = flags && (flags.TendenciaSuicida || flags.PautasDeAlarmaClinicas || flags.ViolenciaRiesgoExtremo)
+  // Normalize flags to a boolean-map shape
+  let norm = { TendenciaSuicida: false, PautasDeAlarmaClinicas: false, ViolenciaRiesgoExtremo: false }
+  try {
+    if (Array.isArray(flags)) {
+      norm = {
+        TendenciaSuicida: flags.includes('TendenciaSuicida'),
+        PautasDeAlarmaClinicas: flags.includes('PautasDeAlarmaClinicas'),
+        ViolenciaRiesgoExtremo: flags.includes('ViolenciaRiesgoExtremo'),
+      }
+    } else if (flags && typeof flags === 'object') {
+      // Sometimes a nested { result: { flags: [...] } }
+      const inner = Array.isArray(flags.flags) ? flags.flags : (Array.isArray(flags.result?.flags) ? flags.result.flags : null)
+      if (inner) {
+        norm = {
+          TendenciaSuicida: inner.includes('TendenciaSuicida'),
+          PautasDeAlarmaClinicas: inner.includes('PautasDeAlarmaClinicas'),
+          ViolenciaRiesgoExtremo: inner.includes('ViolenciaRiesgoExtremo'),
+        }
+      } else {
+        norm = {
+          TendenciaSuicida: !!flags.TendenciaSuicida || flags.TendenciaSuicida === 'true',
+          PautasDeAlarmaClinicas: !!flags.PautasDeAlarmaClinicas || flags.PautasDeAlarmaClinicas === 'true',
+          ViolenciaRiesgoExtremo: !!flags.ViolenciaRiesgoExtremo || flags.ViolenciaRiesgoExtremo === 'true',
+        }
+      }
+    }
+  } catch {}
+
+  const hasAny = norm.TendenciaSuicida || norm.PautasDeAlarmaClinicas || norm.ViolenciaRiesgoExtremo
   if (hasAny) {
-    onFlagsDetected?.(flags)
+    onFlagsDetected?.(norm)
+    pendingClearOnNextNoFlag = false
   } else {
-    onNoFlagsNextUserMessageCb?.()
+    if (pendingClearOnNextNoFlag) {
+      onNoFlagsNextUserMessageCb?.()
+      pendingClearOnNextNoFlag = false
+    }
     onFlagsDetected?.(null)
   }
 }
@@ -296,6 +466,149 @@ export function clearBannerOnUserMessage(cb) {
 
 export function getWidgetInstance() {
   return widgetInstance
+}
+
+export function getConversationLog() {
+  try { return conversationLog.slice(-100) } catch { return [] }
+}
+
+function installInputCapture(containerId) {
+  const host = document.getElementById(containerId)
+  if (!host) return
+
+  const getAllRoots = (start) => {
+    const roots = []
+    const stack = [start]
+    const seen = new Set()
+    while (stack.length) {
+      const el = stack.pop()
+      if (!el || seen.has(el)) continue
+      seen.add(el)
+      roots.push(el)
+      // Traverse shadow roots
+      if (el.shadowRoot) stack.push(el.shadowRoot)
+      // Traverse children
+      if (el.children) for (const c of el.children) stack.push(c)
+      // If this is a ShadowRoot, dive into its children
+      try {
+        if (typeof ShadowRoot !== 'undefined' && el instanceof ShadowRoot) {
+          for (const c of el.children) stack.push(c)
+        }
+      } catch {}
+    }
+    // Ensure document also scanned for detached overlays
+    if (!roots.includes(document)) roots.push(document)
+    return roots
+  }
+
+  const selectors = 'textarea, input[type="text"], [contenteditable="true"]'
+  const sendSelectors = 'button[type="submit"], .send, .serenity-send, [aria-label*="Enviar"], [title*="Enviar"], [aria-label*="Send"], [title*="Send"], button, .button'
+
+  const pushIfNew = (text) => {
+    const t = (text || '').trim()
+    if (!t) return
+    lastTypedUserText = t
+    if (lastPushedUserText === t) return
+    conversationLog.push({ role: 'user', content: t })
+    lastPushedUserText = t
+  }
+
+  const attachListeners = () => {
+    const roots = getAllRoots(host)
+    for (const r of roots) {
+      try {
+        // capture typing
+        r.addEventListener('input', (ev) => {
+          try {
+            const el = ev.target
+            const isText = el && (el.matches?.(selectors) || el.isContentEditable)
+            if (!isText) return
+            const val = el.isContentEditable ? el.textContent : el.value
+            lastTypedUserText = String(val || '').trim()
+          } catch {}
+        }, true)
+        // capture Enter submit
+        r.addEventListener('keydown', (ev) => {
+          try {
+            const el = ev.target
+            const isText = el && (el.matches?.(selectors) || el.isContentEditable)
+            if (!isText) return
+            if (ev.key === 'Enter' && !ev.shiftKey) {
+              const val = el.isContentEditable ? el.textContent : el.value
+              pushIfNew(val)
+            }
+          } catch {}
+        }, true)
+        // capture click submit
+        r.addEventListener('click', (ev) => {
+          try {
+            const el = ev.target
+            const label = (el?.getAttribute?.('aria-label') || el?.getAttribute?.('title') || '').toLowerCase()
+            if (label.includes('enviar') || label.includes('send') || el.matches?.(sendSelectors)) {
+              const input = r.querySelector?.(selectors)
+              const val = input?.isContentEditable ? input.textContent : input?.value
+              pushIfNew(val)
+            }
+          } catch {}
+        }, true)
+      } catch {}
+    }
+  }
+
+  attachListeners()
+  // Observe future DOM changes (shadow DOM included via subtree on host)
+  try {
+    const mo = new MutationObserver(() => attachListeners())
+    mo.observe(host, { subtree: true, childList: true })
+  } catch {}
+}
+
+export function getLastTypedUserText() {
+  // If we already captured typed text, use it
+  if (lastTypedUserText && lastTypedUserText.trim()) return lastTypedUserText.trim()
+  // Fallback: inspect last user bubble in the chat UI, including shadow roots
+  try {
+    const host = document.getElementById('aihub-chat') || document.getElementById('serenity-chat-container')
+    if (!host) return ''
+    const getAllRoots = (start) => {
+      const roots = []
+      const stack = [start]
+      const seen = new Set()
+      while (stack.length) {
+        const el = stack.pop()
+        if (!el || seen.has(el)) continue
+        seen.add(el)
+        roots.push(el)
+        if (el.shadowRoot) stack.push(el.shadowRoot)
+        if (el.children) for (const c of el.children) stack.push(c)
+        try {
+          if (typeof ShadowRoot !== 'undefined' && el instanceof ShadowRoot) {
+            for (const c of el.children) stack.push(c)
+          }
+        } catch {}
+      }
+      return roots
+    }
+    const roots = getAllRoots(host)
+    const bubbleSelectors = [
+      '[data-role="user"]', '[data-owner="user"]', '[data-author="user"]', '[data-message-author="user"]',
+      '.user', '.from-user', '.message-user', '.chat-message.user', '.bubble.user', '.msg.user'
+    ]
+    let lastText = ''
+    for (const r of roots) {
+      try {
+        for (const sel of bubbleSelectors) {
+          const nodes = r.querySelectorAll?.(sel)
+          if (!nodes || !nodes.length) continue
+          const arr = Array.from(nodes)
+          const last = arr[arr.length - 1]
+          const t = String(last?.textContent || '').trim()
+          if (t) lastText = t
+        }
+      } catch {}
+    }
+    return lastText
+  } catch { return '' }
 }
 
 export async function sendUserMessage(text, { waitMs = 8000 } = {}) {
