@@ -59,7 +59,10 @@ function App() {
   // When flags are detected, send history + flags to the second agent and show its response
   useEffect(() => {
     const hasAny = !!(flagsState && (flagsState.TendenciaSuicida || flagsState.PautasDeAlarmaClinicas || flagsState.ViolenciaRiesgoExtremo))
-    if (!hasAny) return
+    if (!hasAny) {
+      try { window.__secondAgentWhySkip = { reason: 'no-flags', when: Date.now() } } catch {}
+      return
+    }
     async function run() {
       try {
         setIsEvaluating(true)
@@ -74,10 +77,14 @@ function App() {
         } else {
           // If no typed text available, but there is no recent user message, keep as-is
         }
+        try { window.__secondAgentEffect = { when: Date.now(), stage: 'before-dedupe', flags: flagsState, historyLen: history.length } } catch {}
         const evalKey = JSON.stringify({ h0: history[0]?.content?.slice(0,32) || '', len: history.length, flags: flagsState })
-        if (lastEvalKeyRef.current === evalKey) return
+        if (lastEvalKeyRef.current === evalKey) {
+          try { window.__secondAgentWhySkip = { reason: 'dedupe', evalKey, when: Date.now() } } catch {}
+          return
+        }
         lastEvalKeyRef.current = evalKey
-        try { window.__secondAgentEffect = { when: Date.now(), flags: flagsState, historyLen: history.length, lastUser: history[history.length-1]?.role === 'user' ? String(history[history.length-1]?.content||'').slice(0,120) : null } } catch {}
+        try { window.__secondAgentEffect = { when: Date.now(), stage: 'dispatch', flags: flagsState, historyLen: history.length, lastUser: history[history.length-1]?.role === 'user' ? String(history[history.length-1]?.content||'').slice(0,120) : null } } catch {}
         try { console.debug('[SecondAgent] dispatch', { flagsState, historyLen: history.length }) } catch {}
         const { text, json } = await evaluateFlagsWithSecondAgent({ history, flags: flagsState })
         const pretty = formatSecondOpinion(text, json)
@@ -92,6 +99,18 @@ function App() {
     }
     run()
   }, [flagsState])
+
+  // Expose a manual trigger for debugging from console
+  useEffect(() => {
+    try {
+      window.__secondAgentVersion = 'debug-1';
+      window.__forceSecondAgent = async (text, flags = { TendenciaSuicida: true }) => {
+        const history = text ? [{ role: 'user', content: String(text) }] : getConversationLog()
+        const { text: t, json } = await evaluateFlagsWithSecondAgent({ history, flags })
+        return { text: t, json }
+      }
+    } catch {}
+  }, [])
 
   return (
     <div className="app-container">
