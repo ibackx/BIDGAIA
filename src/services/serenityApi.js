@@ -50,10 +50,11 @@ export async function sendMessage({ chatId, message, agentCode = AGENT_CODE, api
 export function extractFlagsFromResponse(response) {
   let flags = { TendenciaSuicida: false, PautasDeAlarmaClinicas: false, ViolenciaRiesgoExtremo: false }
   try {
-    // 0) skillsResults array variant (as seen in SerenityAPIChat.jsx)
-    if (Array.isArray(response?.skillsResults)) {
+    // 0) skillsResults array variants (top-level or nested under result)
+    const sr = Array.isArray(response?.skillsResults) ? response.skillsResults : (Array.isArray(response?.result?.skillsResults) ? response.result.skillsResults : null)
+    if (Array.isArray(sr)) {
       // Prefer an entry with explicit result.flags
-      const withFlags = response.skillsResults.find((s) => s?.result && typeof s.result.flags === 'object')
+      const withFlags = sr.find((s) => s?.result && typeof s.result.flags === 'object')
       if (withFlags) {
         const f = withFlags.result.flags
         return {
@@ -64,10 +65,10 @@ export function extractFlagsFromResponse(response) {
       }
       // Otherwise inspect each skill's output/result booleans and names
       const mapped = { ...flags }
-      for (const s of response.skillsResults) {
+      for (const s of sr) {
         const name = String(s?.name || '')
         const out = s?.output ?? s?.result ?? s
-        const val = out?.content ?? out?.json_content ?? out
+        const val = out?.content ?? out?.json_content ?? out?.jsonContent ?? out
         const isTrue = val === true || val === 'true'
         if (out?.type === 'CheckCondition' && isTrue) {
           if (name.includes('TendenciaSuicida')) mapped.TendenciaSuicida = true
@@ -78,7 +79,7 @@ export function extractFlagsFromResponse(response) {
       if (mapped.TendenciaSuicida || mapped.PautasDeAlarmaClinicas || mapped.ViolenciaRiesgoExtremo) return mapped
     }
 
-    const ar = response?.action_results || null
+    const ar = response?.action_results || response?.actionResults || response?.result || response?.skills || null
     // 1) Preferred: explicit flags array from ConditionChecker
     if (ar?.ConditionChecker?.result?.flags && Array.isArray(ar.ConditionChecker.result.flags)) {
       const arr = ar.ConditionChecker.result.flags
@@ -96,10 +97,12 @@ export function extractFlagsFromResponse(response) {
         if (v === true || v === 'true') return true
         if (v && typeof v === 'object') {
           if (v.json_content === true) return true
+          if (v.jsonContent === true) return true
           if (v.content === true || v.content === 'true') return true
           if (v.output && (v.output.content === true || v.output.content === 'true')) return true
           if (v.output && v.output.type === 'CheckCondition' && (v.output.content === true || v.output.content === 'true')) return true
           if (v.result && (v.result.content === true || v.result === true)) return true
+          if (v.result && Array.isArray(v.result.flags) && v.result.flags.length) return true
         }
         return false
       }
@@ -119,6 +122,13 @@ export function extractFlagsFromResponse(response) {
       const mapped = { ...flags }
       for (const [k, v] of Object.entries(ar)) {
         const out = v?.output ?? v?.result ?? v
+        // explicit flags array
+        const rf = out?.flags || v?.flags || v?.result?.flags
+        if (rf && Array.isArray(rf)) {
+          if (rf.includes('TendenciaSuicida')) mapped.TendenciaSuicida = true
+          if (rf.includes('PautasDeAlarmaClinicas')) mapped.PautasDeAlarmaClinicas = true
+          if (rf.includes('ViolenciaRiesgoExtremo') || rf.includes('Violencia') || rf.includes('RiesgoExtremo')) mapped.ViolenciaRiesgoExtremo = true
+        }
         if (out?.type === 'CheckCondition' && (out.content === true || out.content === 'true')) {
           if (k.includes('TendenciaSuicida')) mapped.TendenciaSuicida = true
           if (k.includes('PautasDeAlarmaClinicas')) mapped.PautasDeAlarmaClinicas = true
@@ -129,7 +139,7 @@ export function extractFlagsFromResponse(response) {
     }
 
     // 3) skills.CheckCondition as a boolean: keep defaults if unknown which
-    const out = response?.skills?.CheckCondition?.output
+    const out = response?.skills?.CheckCondition?.output || response?.result?.skills?.CheckCondition?.output
     if (out && (out.content === true || out.content === 'true')) {
       // Unknown specific flag; leave as false for each to avoid false positives
       return flags
@@ -186,7 +196,7 @@ export async function evaluateFlagsWithSecondAgent({
   return { chatId, response: data, text, json }
 }
 
-function extractAssistantResult(resp) {
+export function extractAssistantResult(resp) {
   try {
     if (!resp) return { text: '', json: null }
     // Prefer explicit json fields
